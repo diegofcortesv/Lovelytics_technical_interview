@@ -1,0 +1,55 @@
+# Fraud Copilot - Agent Configuration
+
+# --- Databricks Endpoints ---
+endpoints:
+  llm: "databricks-meta-llama-3-1-405b-instruct"
+  fraud_model: "fraud_agent.default.fraud_detection_model"
+  purchase_model: "fraud_agent.default.purchase_prediction_model"
+  vector_search_endpoint: "fraud-copilot-vs-endpoint"
+  vector_search_index: "fraud_agent.default.financial_docs_index"
+
+# --- LLM Settings ---
+llm:
+  temperature: 0.1
+  max_tokens: 1024
+
+# --- Unity Catalog ---
+catalog: "fraud_agent"
+schema: "default"
+
+# --- Risk Tier Thresholds ---
+fraud_risk:
+  high_threshold: 0.7
+  medium_threshold: 0.4
+  actions:
+    high: "Block transaction and verify identity immediately"
+    medium: "Flag for manual review within 24 hours"
+    low: "No immediate action, monitor patterns"
+
+# --- Cognitive Load ---
+cognitive_load:
+  enabled: true
+  levels:
+    normal: { min: 0, max: 30 }
+    elevated: { min: 31, max: 60 }
+    high: { min: 61, max: 80 }
+    critical: { min: 81, max: 100 }
+
+# --- RAG Settings ---
+rag:
+  top_k: 5
+  tfidf_min_score: 0.05
+  embedding_model: "databricks-gte-large-en"
+  max_chunk_chars: 1500
+
+# --- Evaluation ---
+evaluation:
+  golden_set_size: 30
+  batch_size: 6  # Queries per batch (free-tier rate limit)
+  targets:
+    intent_accuracy: 0.90
+    tool_accuracy: 0.90
+    content_relevance: 0.80
+    response_rate: 0.95
+    avg_latency_s: 5.0
+    p95_latency_s: 10.0

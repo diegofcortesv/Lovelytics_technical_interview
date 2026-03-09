@@ -1,0 +1,126 @@
+# Fraud Copilot - Model Training Configuration
+
+# --- Fraud Detection Model ---
+fraud_model:
+  algorithm: "XGBoost"
+  pipeline: "ColumnTransformer(OrdinalEncoder) + XGBClassifier"
+  validation: "StratifiedKFold"
+  n_folds: 5
+
+  features:
+    numeric:
+      - transaction_amount
+      - customer_age
+      - account_age_days
+      - transaction_velocity_24h
+      - avg_transaction_amount_30d
+      - num_transactions_24h
+      - num_transactions_7d
+      - failed_transactions_24h
+      - ip_reputation_score
+      - customer_risk_score
+      - account_balance
+      - credit_limit
+      - debt_to_income_ratio
+      - previous_fraud_reports
+      - merchant_risk_score
+      - distance_from_home_km
+      - distance_from_last_transaction_km
+      - hour_of_day
+
+    binary:
+      - is_international
+      - shipping_address_match
+      - billing_address_match
+      - cvv_match
+      - card_present
+      - is_recurring
+
+    categorical:
+      - transaction_type
+      - merchant_category
+      - device_type
+      - country
+
+  hyperparameters:
+    max_depth: 3
+    n_estimators: 150
+    learning_rate: 0.1
+    min_child_weight: 3
+    subsample: 0.8
+    colsample_bytree: 0.8
+    gamma: 0.1
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    scale_pos_weight: 1
+    eval_metric: "auc"
+    random_state: 42
+
+  target: "fraud"
+  metric_primary: "roc_auc"
+  metric_targets:
+    roc_auc: 0.90
+    f1: 0.85
+    pr_auc: 0.85
+
+
+# --- Purchase Prediction Model ---
+purchase_model:
+  algorithm: "LightGBM"
+  pipeline: "ColumnTransformer(OrdinalEncoder) + LGBMRegressor"
+  validation: "GroupKFold"
+  group_column: "membership_tier"
+
+  features:
+    numeric:
+      - age
+      - customer_tenure_days
+      - num_transactions_last_month
+      - num_transactions_last_year
+      - avg_transaction_value
+      - total_spent_last_year
+      - loyalty_points
+      - customer_satisfaction_score
+      - email_engagement_rate
+      - cart_abandonment_rate
+      - distance_to_nearest_store_km
+      - num_customer_service_contacts
+      - product_return_rate
+      - last_purchase_days_ago
+
+    binary:
+      - mobile_app_user
+      - social_media_follower
+      - has_credit_card
+      - has_children
+      - owns_home
+
+    categorical:
+      - gender
+      - income_bracket
+      - membership_tier
+      - preferred_category
+      - preferred_payment_method
+      - location_type
+      - occupation_category
+      - education_level
+      - marital_status
+
+  hyperparameters:
+    n_estimators: 200
+    max_depth: 4
+    learning_rate: 0.05
+    num_leaves: 15
+    min_child_samples: 10
+    subsample: 0.8
+    colsample_bytree: 0.8
+    reg_alpha: 0.1
+    reg_lambda: 1.0
+    random_state: 42
+
+  target: "purchase_amount"
+  log_transform_threshold: 2.0  # Apply log1p if skewness > this
+  metric_primary: "rmse"
+  metric_targets:
+    r2: 0.85
+    mape_per_tier: 20.0  # max acceptable MAPE per tier
