@@ -10,6 +10,8 @@
 
 ## Architecture
 
+Full architecture document: [`docs/architecture.md`](docs/architecture.md)
+
 ```
 Analysts → Databricks App (Chat UI)
                │
