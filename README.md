@@ -33,8 +33,43 @@ Analysts → Databricks App (Chat UI)
                         LightGBM)
 ```
 
-Full architecture document: [`docs/architecture.md`](docs/architecture.md)
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Analyst
+    participant AG as LangGraph Agent
+    participant LLM as Llama 3.1 405B
+    participant FM as Fraud Model<br/>(XGBoost Pipeline)
+    participant SHAP as SHAP Explainer
+    participant CL as Cognitive Load
+    participant ML as MLflow Tracing
 
+    A->>AG: "Is this $2,500 electronics purchase<br/>at 3am international fraudulent?"
+    
+    Note over AG,LLM: classify_intent
+    AG->>LLM: Classify intent (structured prompt)
+    LLM-->>AG: intent=prediction_fraud, conf=0.95
+    AG->>ML: trace(classify)
+
+    Note over AG,FM: predict_fraud
+    AG->>AG: extract_fraud_features(query) via regex
+    AG->>FM: predict(raw_features_dict)
+    Note over FM: Pipeline: OrdinalEncoder → XGBClassifier
+    FM-->>AG: P(fraud) = 0.82
+    AG->>SHAP: TreeExplainer.shap_values(X_encoded)
+    SHAP-->>AG: top-5 features
+    AG->>ML: trace(predict_fraud)
+
+    Note over AG,CL: assess_load
+    AG->>CL: assess(session_metrics)
+    CL-->>AG: score=28, level=normal
+
+    Note over AG,LLM: synthesize
+    AG->>LLM: Compose: prediction + SHAP + action
+    LLM-->>AG: Formatted response
+
+    AG-->>A: HIGH RISK (82%) + SHAP explanation + action
+```
 ---
 
 ## Key Results
