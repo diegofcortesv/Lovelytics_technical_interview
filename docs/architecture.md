@@ -150,6 +150,422 @@ A typical analyst executes a lot of investigations daily. Each investigation com
 │  Analyst Session Metrics ──→ Cognitive Load Dashboard               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+### Production Deployment: 3-Level Concurrency & AI Gateway
+
+```mermaid
+flowchart TB
+    subgraph analysts["100 Fraud Analysts"]
+        direction LR
+        a1["Analyst 1"]
+        a2["Analyst 2"]
+        a3["..."]
+        a4["Analyst 100"]
+    end
+
+    subgraph presentation["Presentation — Databricks Apps"]
+        ui["Chat UI<br/><b>WebSocket Streaming</b><br/><i>OAuth + session persistence<br/>Conversation history → Delta</i>"]
+    end
+
+    subgraph level1["LEVEL 1 — Agent Endpoint (LangGraph)"]
+        lb1["Load Balancer"]
+        subgraph replicas_agent["Auto-Scaling Replicas"]
+            direction LR
+            r1["Replica 1<br/><i>LangGraph<br/>process</i>"]
+            r2["Replica 2"]
+            r3["..."]
+            r4["Replica N"]
+        end
+        config1["min_concurrency: 8<br/>max_concurrency: 64<br/>scale_to_zero: false<br/>workload_type: CPU"]
+    end
+
+    subgraph level2["LEVEL 2 — ML Model Endpoints"]
+        subgraph fraud_ep["Fraud Model Endpoint"]
+            direction LR
+            fr1["Replica"]
+            fr2["Replica"]
+            fr3["..."]
+        end
+        config_f["min: 4 · max: 16<br/>CPU · XGBoost Pipeline"]
+
+        subgraph purchase_ep["Purchase Model Endpoint"]
+            direction LR
+            pr1["Replica"]
+            pr2["Replica"]
+        end
+        config_p["min: 4 · max: 12<br/>CPU · LightGBM Pipeline"]
+    end
+
+    subgraph gateway["AI GATEWAY — Mosaic AI"]
+        gw["AI Gateway<br/><b>Rate Limiting + Routing</b>"]
+        
+        subgraph llm_providers["LLM Providers (Failover Chain)"]
+            direction LR
+            primary["Primary<br/><b>Llama 3.1 405B</b><br/><i>Databricks-hosted</i>"]
+            fallback1["Fallback 1<br/><b>Llama 3.1 70B</b><br/><i>Lower cost</i>"]
+            fallback2["Fallback 2<br/><b>External API</b><br/><i>Claude / GPT-4</i>"]
+        end
+
+        gw_features["Features:<br/>• Rate limiting + retry with backoff<br/>• Prompt caching (static system prompts)<br/>• Token usage tracking per endpoint<br/>• Automatic failover on 429/5xx"]
+    end
+
+    subgraph level3["LEVEL 3 — SQL Warehouse"]
+        sql["Serverless SQL Warehouse<br/><b>Auto-Scaling</b>"]
+        sql_config["min_clusters: 1<br/>max_clusters: 4<br/>auto_stop: 10 min"]
+    end
+
+    subgraph vs_layer["Vector Search"]
+        vs["Vector Search Endpoint<br/><b>fraud-copilot-vs-endpoint</b><br/><i>STANDARD type</i>"]
+    end
+
+    subgraph session["Session State Management"]
+        sticky["Option A: Sticky Sessions<br/><i>Load balancer affinity<br/>Same analyst → same replica</i>"]
+        delta_state["Option B: Delta Persistence<br/><i>Read conversation history<br/>per analyst from Delta<br/>~100ms overhead</i>"]
+    end
+
+    analysts --> ui
+    ui --> lb1
+    lb1 --> replicas_agent
+    replicas_agent -->|"Model inference<br/>+ SHAP"| level2
+    replicas_agent -->|"Intent classify<br/>+ Synthesize"| gw
+    gw --> primary
+    primary -.->|"429 / timeout"| fallback1
+    fallback1 -.->|"429 / timeout"| fallback2
+    replicas_agent -->|"Data queries<br/>(production path)"| level3
+    replicas_agent -->|"RAG retrieval"| vs
+    replicas_agent -.->|"Session context"| session
+
+    style level1 fill:#0d1117,stroke:#e94560,color:#c9d1d9
+    style level2 fill:#0d1117,stroke:#1f6feb,color:#c9d1d9
+    style gateway fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style level3 fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style session fill:#0d1117,stroke:#8b949e,color:#c9d1d9
+```
+### CI/CD Pipeline: Deploy Code Pattern with Catalog Promotion
+
+```mermaid
+flowchart TB
+    subgraph trigger["Triggers"]
+        direction LR
+        push["Git Push<br/><i>PR merged to main</i>"]
+        drift["Drift Alert<br/><i>PSI > 0.2 or<br/>AUC < 0.85</i>"]
+        sched["Scheduled<br/><i>Weekly (fraud)<br/>Bi-weekly (purchase)</i>"]
+    end
+
+    subgraph ci["CI — GitHub Actions"]
+        lint["Lint & Format<br/><i>ruff, black</i>"]
+        unit["Unit Tests<br/><i>pytest: 40 tests<br/>tools, policies,<br/>routing, extraction</i>"]
+        build["Build DAB Bundle<br/><i>databricks bundle validate</i>"]
+        lint --> unit --> build
+    end
+
+    subgraph dev_cat["DEV Catalog"]
+        dev_train["Execute Training Code<br/><i>Same notebooks as dev<br/>Against dev data</i>"]
+        dev_log["MLflow Experiment<br/><i>Log params, metrics,<br/>SHAP artifacts</i>"]
+        dev_reg["Register Model<br/><i>dev.default.fraud_model<br/>dev.default.purchase_model</i>"]
+        dev_train --> dev_log --> dev_reg
+    end
+
+    subgraph gates["Validation Gates (Automated)"]
+        direction TB
+        gate1["Gate 1: Performance<br/><b>AUC > 0.88</b> (fraud)<br/><b>R² > 0.80</b> (purchase)<br/><i>Evaluated on holdout set</i>"]
+        gate2["Gate 2: Fairness<br/><b>Disparity < 0.05</b><br/><i>Check by country,<br/>device_type subgroups</i>"]
+        gate3["Gate 3: Latency<br/><b>P95 < 200ms</b><br/><i>Load test: 100 requests<br/>against staging endpoint</i>"]
+        gate4["Gate 4: A/B Comparison<br/><b>Challenger >= Champion</b><br/><i>Same holdout set,<br/>paired comparison</i>"]
+        gate5["Gate 5: Integration<br/><b>Agent invokes correctly</b><br/><i>5 smoke queries<br/>per intent type</i>"]
+        gate6["Gate 6: Agent Quality<br/><b>Golden set > 90% routing</b><br/><i>30 queries against<br/>staging agent</i>"]
+        gate1 --> gate2 --> gate3 --> gate4 --> gate5 --> gate6
+    end
+
+    subgraph staging_cat["STAGING Catalog"]
+        stg_deploy["Deploy to Staging<br/><i>databricks bundle deploy<br/>--target staging</i>"]
+        stg_ep["Staging Endpoints<br/><i>fraud-copilot-agent-staging<br/>fraud-model-staging<br/>purchase-model-staging</i>"]
+        stg_deploy --> stg_ep
+    end
+
+    subgraph prod_cat["PROD Catalog"]
+        promote["Promote Model<br/><i>Copy model version<br/>dev → prod catalog<br/>Set alias @champion</i>"]
+        prod_ep["Production Endpoints<br/><i>fraud-copilot-agent<br/>fraud-model<br/>purchase-model</i>"]
+        prod_deploy["Deploy Agent<br/><i>databricks bundle deploy<br/>--target production</i>"]
+        promote --> prod_deploy --> prod_ep
+    end
+
+    subgraph fail_path["Gate Failure"]
+        alert["Notify Team<br/><i>Slack + email</i>"]
+        challenger["Model stays as<br/><b>@challenger</b><br/><i>Available for A/B<br/>but not serving</i>"]
+        report["Generate Report<br/><i>Which gate failed?<br/>Metric values vs thresholds</i>"]
+        alert --> challenger
+        alert --> report
+    end
+
+    trigger --> ci
+    ci -->|"Tests pass"| dev_cat
+    dev_cat -->|"Model registered"| staging_cat
+    staging_cat --> gates
+    gates -->|"All pass"| prod_cat
+    gates -->|"Any fails"| fail_path
+
+    style ci fill:#0d1117,stroke:#8b949e,color:#c9d1d9
+    style dev_cat fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style staging_cat fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style gates fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style prod_cat fill:#0d1117,stroke:#1f6feb,color:#c9d1d9
+    style fail_path fill:#2d1117,stroke:#e94560,color:#f85149
+
+```
+
+### Production Monitoring: Drift Detection & Retrain Loop
+
+```mermaid
+flowchart TB
+    subgraph serving["Model Serving (Production)"]
+        fraud_ep["Fraud Model<br/>Endpoint"]
+        purchase_ep["Purchase Model<br/>Endpoint"]
+        agent_ep["Agent Endpoint"]
+    end
+
+    subgraph inference_logs["Inference Tables (Automatic)"]
+        inf_fraud[("fraud_model_inference_log<br/><i>Every prediction:<br/>features, probability,<br/>risk_tier, timestamp,<br/>latency_ms</i>")]
+        inf_purchase[("purchase_model_inference_log<br/><i>Every prediction:<br/>features, predicted_amount,<br/>timestamp, latency_ms</i>")]
+        inf_agent[("agent_inference_log<br/><i>Every query:<br/>intent, tools_used,<br/>latency, token_count</i>")]
+    end
+
+    subgraph traces["MLflow Traces"]
+        trace_store[("MLflow Trace Store<br/><i>Full execution graph<br/>per query: classify →<br/>tool → assess → synth</i>")]
+    end
+
+    subgraph monitoring["Lakehouse Monitoring (Scheduled Jobs)"]
+        subgraph fraud_mon["Fraud Model Monitors"]
+            psi_fraud["PSI Monitor<br/><b>Weekly</b><br/><i>Top-10 features<br/>vs training baseline</i>"]
+            auc_fraud["AUC Rolling Window<br/><b>Daily</b><br/><i>30-day window<br/>against labeled data</i>"]
+            dist_fraud["Prediction Distribution<br/><b>Daily</b><br/><i>P(fraud) histogram<br/>shift vs baseline</i>"]
+        end
+
+        subgraph purchase_mon["Purchase Model Monitors"]
+            psi_purchase["PSI Monitor<br/><b>Bi-weekly</b><br/><i>Top-10 features</i>"]
+            rmse_purchase["RMSE by Tier<br/><b>Weekly</b><br/><i>Per membership_tier<br/>rolling window</i>"]
+            mape_purchase["MAPE Monitor<br/><b>Weekly</b><br/><i>Alert if > 20%<br/>in any tier</i>"]
+        end
+
+        subgraph agent_mon["Agent Monitors"]
+            routing_acc["Routing Accuracy<br/><b>Weekly</b><br/><i>Golden set re-eval<br/>30 queries</i>"]
+            latency_mon["Latency Monitor<br/><b>Continuous</b><br/><i>P50 / P95 / P99<br/>per intent type</i>"]
+            token_mon["Token Usage<br/><b>Daily</b><br/><i>Avg tokens per query<br/>by intent type</i>"]
+            error_mon["Error Rate<br/><b>Continuous</b><br/><i>HTTP 5xx rate<br/>per endpoint</i>"]
+        end
+    end
+
+    subgraph alerts["Alert Engine (Databricks SQL Alerts)"]
+        direction TB
+        alert_drift["DRIFT ALERT<br/><i>PSI > 0.2 any feature<br/>or AUC < 0.85</i>"]
+        alert_perf["PERFORMANCE ALERT<br/><i>Latency P95 > 200ms<br/>or error rate > 1%</i>"]
+        alert_quality["QUALITY ALERT<br/><i>Routing accuracy < 90%<br/>or token usage spike</i>"]
+        alert_cost["COST ALERT<br/><i>Daily spend > threshold<br/>or DBU anomaly</i>"]
+    end
+
+    subgraph actions["Automated Actions"]
+        retrain["Trigger Retrain<br/><b>Databricks Workflow</b><br/><i>Execute training notebooks<br/>against prod data</i>"]
+        scale["Scale Endpoint<br/><i>Increase max_concurrency<br/>or add replicas</i>"]
+        notify["Notify Team<br/><i>Slack + PagerDuty</i>"]
+        dashboard["Update Dashboard<br/><i>SQL Dashboard:<br/>drift trends,<br/>quality metrics,<br/>cost attribution</i>"]
+    end
+
+    subgraph feedback["Feedback Loop"]
+        labels["Ground Truth Labels<br/><i>Analyst confirms/rejects<br/>fraud predictions<br/>(delayed 24-72h)</i>"]
+        join["Join Predictions<br/>with Labels<br/><i>inference_log JOIN<br/>confirmed_fraud</i>"]
+        eval_real["Real AUC Computation<br/><i>Actual performance<br/>vs predicted</i>"]
+    end
+
+    serving --> inference_logs
+    agent_ep --> traces
+    inference_logs --> monitoring
+    traces --> agent_mon
+
+    psi_fraud & auc_fraud & dist_fraud --> alert_drift
+    psi_purchase & rmse_purchase & mape_purchase --> alert_drift
+    latency_mon & error_mon --> alert_perf
+    routing_acc --> alert_quality
+    token_mon --> alert_cost
+
+    alert_drift --> retrain
+    alert_drift --> notify
+    alert_perf --> scale
+    alert_perf --> notify
+    alert_quality --> notify
+    alert_cost --> notify
+
+    monitoring --> dashboard
+
+    labels --> join
+    inf_fraud --> join
+    join --> eval_real
+    eval_real --> auc_fraud
+
+    retrain -->|"New model version<br/>→ validation gates"| serving
+
+    style serving fill:#0d1117,stroke:#1f6feb,color:#c9d1d9
+    style inference_logs fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style monitoring fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style alerts fill:#0d1117,stroke:#e94560,color:#c9d1d9
+    style actions fill:#0d1117,stroke:#8b949e,color:#c9d1d9
+    style feedback fill:#0d1117,stroke:#a371f7,color:#c9d1d9
+
+```
+### Production Cognitive Load: Real-Time Analyst Monitoring
+
+```mermaid
+flowchart TB
+    subgraph analysts["Analyst Sessions"]
+        direction LR
+        s1["Analyst A<br/><i>Session active<br/>3.5 hours</i>"]
+        s2["Analyst B<br/><i>Session active<br/>1 hour</i>"]
+        s3["Analyst C<br/><i>Session active<br/>6 hours</i>"]
+    end
+
+    subgraph capture["Signal Capture (Per Query)"]
+        direction TB
+        sig1["Query Counter<br/><i>queries_last_hour++</i>"]
+        sig2["Routing Tier<br/><i>Update avg_routing_tier<br/>from classify_intent</i>"]
+        sig3["Interval Timer<br/><i>timestamp_now -<br/>timestamp_last_query</i>"]
+        sig4["Follow-up Detector<br/><i>Semantic similarity<br/>vs previous query<br/>> 0.8 = follow-up</i>"]
+        sig5["Session Clock<br/><i>first_query_ts → now</i>"]
+        sig6["Circadian Factor<br/><i>Current hour of day</i>"]
+    end
+
+    subgraph delta_session["analyst_session_metrics — Delta Table"]
+        direction TB
+        delta_desc["Partitioned by analyst_id<br/>Updated per query"]
+        schema["Schema:<br/>analyst_id STRING<br/>session_id STRING<br/>queries_last_hour INT<br/>avg_routing_tier FLOAT<br/>session_duration_hours FLOAT<br/>avg_query_interval_sec FLOAT<br/>followup_rate FLOAT<br/>hour_of_day INT<br/>load_score INT<br/>load_level STRING<br/>updated_at TIMESTAMP"]
+    end
+
+    subgraph compute["Load Score Computation"]
+        heuristic["Heuristic Scorer<br/><b>v1 (Prototype)</b><br/><i>6 weighted signals<br/>score 0-100</i>"]
+        ml_model["ML Model<br/><b>v2 (Future)</b><br/><i>Trained on real session<br/>data + analyst feedback<br/>+ escalation outcomes</i>"]
+        heuristic -.->|"Replace when<br/>data available"| ml_model
+    end
+
+    subgraph levels["Load Level Actions"]
+        normal["NORMAL (0-30)<br/><i>Standard detailed responses<br/>Full SHAP explanations<br/>Complete citations</i>"]
+        elevated["ELEVATED (31-60)<br/><i>Executive summary first<br/>Structured bullet points<br/>Key metrics highlighted</i>"]
+        high["HIGH (61-80)<br/><i>Concise responses only<br/>Skip secondary details<br/>Offer: 'Need more detail?'</i>"]
+        critical["CRITICAL (81-100)<br/><i>Minimal 2-3 sentence answers<br/>Suggest break<br/>Offer handoff to colleague</i>"]
+    end
+
+    subgraph supervisor_layer["Supervisor Dashboard (SQL Dashboard)"]
+        heatmap["Heatmap<br/><b>load_score × analyst × hour</b><br/><i>Visual: who is overloaded<br/>and when</i>"]
+        trend["Weekly Trend<br/><b>Avg load by team</b><br/><i>Is overall load<br/>increasing?</i>"]
+        correlation["Correlation Analysis<br/><b>load_score vs quality</b><br/><i>Escalation rate,<br/>follow-up rate,<br/>error rate</i>"]
+        alerts_sup["Real-Time Alerts<br/><b>Analyst > 60 for 2+ hours</b><br/><i>Slack notification<br/>to supervisor</i>"]
+    end
+
+    subgraph ops_actions["Operational Actions"]
+        redistribute["Redistribute Caseload<br/><i>Move complex cases<br/>from overloaded analyst<br/>to available analysts</i>"]
+        break_suggest["Suggest Break<br/><i>System note appended<br/>to agent response</i>"]
+        shift_review["Shift Review<br/><i>Supervisors review<br/>high-load periods<br/>for staffing decisions</i>"]
+    end
+
+    analysts --> capture
+    capture --> delta_session
+    delta_session --> compute
+    compute --> levels
+
+    levels -->|"normal/elevated"| analysts
+    levels -->|"high"| break_suggest
+    levels -->|"critical"| redistribute
+
+    delta_session --> supervisor_layer
+    alerts_sup --> redistribute
+    correlation --> shift_review
+
+    style capture fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style delta_session fill:#0d1117,stroke:#1f6feb,color:#c9d1d9
+    style compute fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style levels fill:#0d1117,stroke:#e94560,color:#c9d1d9
+    style supervisor_layer fill:#0d1117,stroke:#a371f7,color:#c9d1d9
+    style ops_actions fill:#0d1117,stroke:#8b949e,color:#c9d1d9
+```
+
+### Cost Optimization: Tier Routing — LLM Bypass for Simple Queries
+
+```mermaid
+flowchart TB
+    subgraph input["Incoming Queries (5,000/day)"]
+        queries["All Analyst Queries"]
+    end
+
+    subgraph classifier["Intent Classifier"]
+        classify["LLM Call #1<br/><b>classify_intent</b><br/><i>~500 tokens<br/>$0.005/query</i>"]
+    end
+
+    subgraph tier1["TIER 1 — Direct SQL (40% traffic)"]
+        direction TB
+        t1_desc["Data Analysis Queries<br/><i>'How many international?'<br/>'Average amount by fraud?'<br/>'Compare Gold vs Silver'</i>"]
+        t1_exec["Execute SQL<br/><i>Pattern-match → DataFrame<br/>or Text-to-SQL → Warehouse</i>"]
+        t1_response["Return Formatted Result<br/><b>No LLM synthesis needed</b><br/><i>Deterministic response</i>"]
+        t1_cost["Cost: $0.005<br/><i>1 LLM call (classify only)<br/>~500 tokens</i>"]
+        t1_desc --> t1_exec --> t1_response
+    end
+
+    subgraph tier2["TIER 2 — Model + Light Synthesis (25% traffic)"]
+        direction TB
+        t2_desc["Prediction Queries<br/><i>'Predict fraud for $2,500...'<br/>'Expected purchase for 45yo...'</i>"]
+        t2_exec["Model Inference<br/><i>Pipeline predict + SHAP<br/>Risk tier + action</i>"]
+        t2_synth["LLM Call #2<br/><b>synthesize</b><br/><i>Format SHAP explanation<br/>~1,200 tokens</i>"]
+        t2_cost["Cost: $0.02<br/><i>2 LLM calls<br/>~1,700 tokens total</i>"]
+        t2_desc --> t2_exec --> t2_synth
+    end
+
+    subgraph tier3["TIER 3 — RAG + Full Synthesis (20% traffic)"]
+        direction TB
+        t3_desc["Knowledge Queries<br/><i>'KYC procedures for...'<br/>'PCI DSS requirements?'</i>"]
+        t3_exec["RAG Retrieval<br/><i>Vector Search top-5<br/>+ context building</i>"]
+        t3_synth["LLM Call #2<br/><b>synthesize with citations</b><br/><i>Context + format<br/>~2,000 tokens</i>"]
+        t3_cost["Cost: $0.04<br/><i>2 LLM calls<br/>~2,500 tokens total</i>"]
+        t3_desc --> t3_exec --> t3_synth
+    end
+
+    subgraph tier4["TIER 4 — Complex Multi-Step (15% traffic)"]
+        direction TB
+        t4_desc["Complex Queries<br/><i>'Top 5 suspicious + why?'<br/>'Fraud patterns intl vs dom?'</i>"]
+        t4_data["Step 1: Data Retrieval"]
+        t4_model["Step 2: Model × 5 txns"]
+        t4_synth["LLM Call #2<br/><b>full synthesis</b><br/><i>Data + predictions + SHAP<br/>~3,000 tokens</i>"]
+        t4_cost["Cost: $0.08<br/><i>3 LLM calls<br/>~3,500 tokens total</i>"]
+        t4_desc --> t4_data --> t4_model --> t4_synth
+    end
+
+    subgraph cost_summary["Cost Summary"]
+        direction TB
+        with_routing["WITH Tier Routing<br/><b>Weighted avg: $0.03/query</b><br/><i>5,000 queries/day = $150/day<br/>= ~$4,500/month LLM cost</i>"]
+        without_routing["WITHOUT Routing<br/><b>All queries full pipeline</b><br/><i>$0.05 avg × 5,000 = $250/day<br/>= ~$7,500/month LLM cost</i>"]
+        savings["SAVINGS: 40%<br/><b>$3,000/month</b><br/><i>From bypassing LLM synthesis<br/>on Tier 1 queries</i>"]
+    end
+
+    subgraph future_opt["Future: Semantic Cache"]
+        cache["Vector Similarity Cache<br/><i>If query embedding matches<br/>previous query > 0.95 similarity:<br/>return cached response</i>"]
+        cache_rate["Estimated Cache Hit: 25-40%<br/><i>Regulatory queries are<br/>highly repetitive</i>"]
+        cache_savings["Additional Savings: 20-30%<br/><i>$1,000-$2,000/month</i>"]
+        cache --> cache_rate --> cache_savings
+    end
+
+    queries --> classifier
+    classify --> tier1
+    classify --> tier2
+    classify --> tier3
+    classify --> tier4
+
+    tier1 & tier2 & tier3 & tier4 --> cost_summary
+    cost_summary -.-> future_opt
+
+    style tier1 fill:#0d1117,stroke:#3fb950,color:#c9d1d9
+    style tier2 fill:#0d1117,stroke:#1f6feb,color:#c9d1d9
+    style tier3 fill:#0d1117,stroke:#d29922,color:#c9d1d9
+    style tier4 fill:#0d1117,stroke:#e94560,color:#c9d1d9
+    style cost_summary fill:#161b22,stroke:#3fb950,color:#c9d1d9
+    style future_opt fill:#161b22,stroke:#8b949e,color:#8b949e
+
+```
+
+
 
 ### 3.2 Component Responsibilities
 
