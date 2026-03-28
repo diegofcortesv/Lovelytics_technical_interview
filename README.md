@@ -4,7 +4,6 @@
 > A multi-tool conversational agent that combines SQL analytics, ML predictions with SHAP explanations, and RAG over regulatory documents — designed to augment fraud analysts, not replace them.
 
 **Author:** Diego Cortes | **Date:** March 2026  
-**Assessment:** Gen AI Engineer — Lovelytics
 
 ---
 
